@@ -64,6 +64,12 @@ type cloneTemplateRepositoryInput struct {
 	IncludeAllBranches bool   `json:"includeAllBranches"`
 }
 
+type editRepositoryInput struct {
+	EnableIssues *bool   `json:"has_issues,omitempty"`
+	EnableWiki   *bool   `json:"has_wiki,omitempty"`
+	Homepage     *string `json:"homepage,omitempty"`
+}
+
 // repoCreate creates a new GitHub repository
 func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*api.Repository, error) {
 	isOrg := false
@@ -92,48 +98,7 @@ func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*a
 	}
 
 	if input.TemplateRepositoryID != "" {
-		var response struct {
-			CloneTemplateRepository struct {
-				Repository api.Repository
-			}
-		}
-
-		if ownerID == "" {
-			var err error
-			ownerID, err = api.CurrentUserID(apiClient, hostname)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		variables := map[string]interface{}{
-			"input": cloneTemplateRepositoryInput{
-				Name:               input.Name,
-				Description:        input.Description,
-				Visibility:         strings.ToUpper(input.Visibility),
-				OwnerID:            ownerID,
-				RepositoryID:       input.TemplateRepositoryID,
-				IncludeAllBranches: input.IncludeAllBranches,
-			},
-		}
-
-		err := apiClient.GraphQL(hostname, `
-		mutation CloneTemplateRepository($input: CloneTemplateRepositoryInput!) {
-			cloneTemplateRepository(input: $input) {
-				repository {
-					id
-					name
-					owner { login }
-					url
-				}
-			}
-		}
-		`, variables, &response)
-		if err != nil {
-			return nil, err
-		}
-
-		return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname), nil
+		return createRepoFromTemplate(apiClient, ownerID, hostname, input)
 	}
 
 	if input.GitIgnoreTemplate != "" || input.LicenseTemplate != "" || input.InitReadme {
@@ -205,6 +170,85 @@ func repoCreate(client *http.Client, hostname string, input repoCreateInput) (*a
 	}
 
 	return api.InitRepoHostname(&response.CreateRepository.Repository, hostname), nil
+}
+
+func createRepoFromTemplate(
+	apiClient *api.Client,
+	ownerID, hostname string,
+	input repoCreateInput,
+) (*api.Repository, error) {
+	var response struct {
+		CloneTemplateRepository struct {
+			Repository api.Repository
+		}
+	}
+
+	if ownerID == "" {
+		var err error
+		ownerID, err = api.CurrentUserID(apiClient, hostname)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	variables := map[string]interface{}{
+		"input": cloneTemplateRepositoryInput{
+			Name:               input.Name,
+			Description:        input.Description,
+			Visibility:         strings.ToUpper(input.Visibility),
+			OwnerID:            ownerID,
+			RepositoryID:       input.TemplateRepositoryID,
+			IncludeAllBranches: input.IncludeAllBranches,
+		},
+	}
+
+	err := apiClient.GraphQL(hostname, `
+		mutation CloneTemplateRepository($input: CloneTemplateRepositoryInput!) {
+			cloneTemplateRepository(input: $input) {
+				repository {
+					id
+					name
+					owner { login }
+					url
+				}
+			}
+		}
+		`, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	if input.HasWikiEnabled && input.HasIssuesEnabled && input.HomepageURL == "" {
+		return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname), nil
+	}
+
+	// When repository is created with template,
+	// wiki is enabled by default regardless of original template.
+	// if HasWikiEnabled is false, disable wiki.
+	var editRepoInput editRepositoryInput
+	if !input.HasWikiEnabled {
+		editRepoInput.EnableWiki = &input.HasWikiEnabled
+	}
+	if !input.HasIssuesEnabled {
+		editRepoInput.EnableIssues = &input.HasIssuesEnabled
+	}
+	if input.HomepageURL != "" {
+		editRepoInput.Homepage = &input.HomepageURL
+	}
+	req, err := json.Marshal(editRepoInput)
+	if err != nil {
+		return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname),
+			fmt.Errorf("repository created, but failed to update repository settings: %w", err)
+	}
+	reqR := bytes.NewReader(req)
+	if err := apiClient.REST(
+		hostname, "PATCH",
+		fmt.Sprintf("repos/%s/%s", response.CloneTemplateRepository.Repository.RepoOwner(), input.Name),
+		reqR, nil,
+	); err != nil {
+		return nil, err
+	}
+	return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname), nil
 }
 
 type ownerResponse struct {
