@@ -181,7 +181,7 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 
 	cmd.Flags().StringVarP(&opts.Description, "description", "d", "", "Description of the repository")
 	cmd.Flags().StringVarP(&opts.Homepage, "homepage", "h", "", "Repository home page `URL`")
-	cmd.Flags().StringVarP(&opts.Team, "team", "t", "", "The `name` of the organization team to be granted access")
+	cmd.Flags().StringVarP(&opts.Team, "team", "t", "", "The `name` of the organization team to be granted read access")
 	cmd.Flags().StringVarP(&opts.Template, "template", "p", "", "Make the new repository based on a template `repository`")
 	cmd.Flags().BoolVar(&opts.Public, "public", false, "Make the new repository public")
 	cmd.Flags().BoolVar(&opts.Private, "private", false, "Make the new repository private")
