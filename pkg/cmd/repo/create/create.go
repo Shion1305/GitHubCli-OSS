@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	sharedAuth "github.com/cli/cli/v2/pkg/cmd/auth/shared"
 	"io"
 	"net/http"
 	"os/exec"
@@ -164,8 +165,36 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 			if cmd.Flags().Changed("enable-wiki") {
 				opts.DisableWiki = !enableWiki
 			}
-			if opts.Template != "" && (opts.Homepage != "" || opts.Team != "" || opts.DisableIssues || opts.DisableWiki) {
-				return cmdutil.FlagErrorf("the `--template` option is not supported with `--homepage`, `--team`, `--disable-issues`, or `--disable-wiki`")
+
+			// When creating repository from a template and also add a team,
+			// admin:org scope is required in order to add the team after repository creation.
+			if opts.Template != "" && opts.Team != "" {
+				// get scopes
+				cfg, err := opts.Config()
+				if err != nil {
+					return err
+				}
+				authCfg := cfg.Authentication()
+				hostname, _ := authCfg.DefaultHost()
+				var hasScope bool
+				if token, _ := authCfg.Token(hostname); token != "" {
+					httpClient, err := opts.HttpClient()
+					if err != nil {
+						return err
+					}
+					if oldScopes, err := sharedAuth.GetScopes(httpClient, hostname, token); err == nil {
+						for _, s := range strings.Split(oldScopes, ",") {
+							s = strings.TrimSpace(s)
+							if s == "admin:org" {
+								hasScope = true
+								break
+							}
+						}
+					}
+				}
+				if !hasScope {
+					return cmdutil.FlagErrorf("admin:org scope is required to add a team when creating a repository from a template")
+				}
 			}
 
 			if opts.Template == "" && opts.IncludeAllBranches {
@@ -411,6 +440,7 @@ func createFromScratch(opts *CreateOptions) error {
 
 // create repo on remote host from existing local repo
 func createFromLocal(opts *CreateOptions) error {
+	fmt.Println(*opts)
 	httpClient, err := opts.HttpClient()
 	if err != nil {
 		return err
@@ -482,6 +512,7 @@ func createFromLocal(opts *CreateOptions) error {
 
 	// repo name will be currdir name or specified
 	if opts.Name == "" {
+		fmt.Println("EMPTY NAME")
 		repoToCreate = ghrepo.NewWithHost("", filepath.Base(absPath), host)
 	} else if strings.Contains(opts.Name, "/") {
 		var err error

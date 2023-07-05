@@ -3,6 +3,7 @@ package create
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -68,6 +69,12 @@ type editRepositoryInput struct {
 	EnableIssues *bool   `json:"has_issues,omitempty"`
 	EnableWiki   *bool   `json:"has_wiki,omitempty"`
 	Homepage     *string `json:"homepage,omitempty"`
+}
+
+type updateTeamsRepositoryInput struct {
+	Permission   string   `json:"permission"`
+	RepositoryID string   `json:"repositoryId"`
+	TeamIDs      []string `json:"teamIds"`
 }
 
 // repoCreate creates a new GitHub repository
@@ -202,6 +209,16 @@ func createRepoFromTemplate(
 		},
 	}
 
+	// resolve teamID before creating repository
+	var teamID string
+	if input.TeamSlug != "" {
+		team, err := resolveOrganizationTeam(apiClient, hostname, input.OwnerLogin, input.TeamSlug)
+		if err != nil {
+			return nil, err
+		}
+		teamID = team.NodeID
+	}
+
 	err := apiClient.GraphQL(hostname, `
 		mutation CloneTemplateRepository($input: CloneTemplateRepositoryInput!) {
 			cloneTemplateRepository(input: $input) {
@@ -218,35 +235,58 @@ func createRepoFromTemplate(
 		return nil, err
 	}
 
-	if input.HasWikiEnabled && input.HasIssuesEnabled && input.HomepageURL == "" {
-		return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname), nil
+	if !(input.HasWikiEnabled && input.HasIssuesEnabled && input.HomepageURL == "") {
+		// When repository is created with template,
+		// wiki is enabled by default regardless of original template.
+		// if HasWikiEnabled is false, disable wiki.
+		var editRepoInput editRepositoryInput
+		if !input.HasWikiEnabled {
+			editRepoInput.EnableWiki = &input.HasWikiEnabled
+		}
+		if !input.HasIssuesEnabled {
+			editRepoInput.EnableIssues = &input.HasIssuesEnabled
+		}
+		if input.HomepageURL != "" {
+			editRepoInput.Homepage = &input.HomepageURL
+		}
+		req, err := json.Marshal(editRepoInput)
+		if err != nil {
+			return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname),
+				fmt.Errorf("repository created, but failed to update repository settings: %w", err)
+		}
+		reqR := bytes.NewReader(req)
+		if err := apiClient.REST(
+			hostname, "PATCH",
+			fmt.Sprintf("repos/%s/%s", response.CloneTemplateRepository.Repository.RepoOwner(), input.Name),
+			reqR, nil,
+		); err != nil {
+			return nil, fmt.Errorf("repository created, but failed to update repository settings: %w", err)
+		}
 	}
-
-	// When repository is created with template,
-	// wiki is enabled by default regardless of original template.
-	// if HasWikiEnabled is false, disable wiki.
-	var editRepoInput editRepositoryInput
-	if !input.HasWikiEnabled {
-		editRepoInput.EnableWiki = &input.HasWikiEnabled
-	}
-	if !input.HasIssuesEnabled {
-		editRepoInput.EnableIssues = &input.HasIssuesEnabled
-	}
-	if input.HomepageURL != "" {
-		editRepoInput.Homepage = &input.HomepageURL
-	}
-	req, err := json.Marshal(editRepoInput)
-	if err != nil {
-		return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname),
-			fmt.Errorf("repository created, but failed to update repository settings: %w", err)
-	}
-	reqR := bytes.NewReader(req)
-	if err := apiClient.REST(
-		hostname, "PATCH",
-		fmt.Sprintf("repos/%s/%s", response.CloneTemplateRepository.Repository.RepoOwner(), input.Name),
-		reqR, nil,
-	); err != nil {
-		return nil, err
+	if teamID != "" {
+		variables := map[string]interface{}{
+			"input": updateTeamsRepositoryInput{
+				Permission:   "READ",
+				RepositoryID: response.CloneTemplateRepository.Repository.ID,
+				TeamIDs:      []string{teamID},
+			},
+		}
+		if err := apiClient.GraphQL(hostname, `
+			mutation UpdateTeamsRepository($input: UpdateTeamsRepositoryInput!) {
+				updateTeamsRepository(input: $input) {
+					repository {
+						id
+						name
+						owner { login }
+						url
+					}
+				}
+			}
+		`, variables, nil); err != nil {
+			return nil, errors.New("Repository created, but failed to add team to repository.\n" +
+				"Make sure you have right permissions and authenticated with admin:org scope.\n" +
+				"You can add your scope with `gh auth refresh --scopes admin:org`")
+		}
 	}
 	return api.InitRepoHostname(&response.CloneTemplateRepository.Repository, hostname), nil
 }
