@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	sharedAuth "github.com/cli/cli/v2/pkg/cmd/auth/shared"
 	"io"
 	"net/http"
 	"os/exec"
@@ -164,37 +163,6 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 			}
 			if cmd.Flags().Changed("enable-wiki") {
 				opts.DisableWiki = !enableWiki
-			}
-
-			// When creating repository from a template and also add a team,
-			// admin:org scope is required in order to add the team after repository creation.
-			if opts.Template != "" && opts.Team != "" {
-				// get scopes
-				cfg, err := opts.Config()
-				if err != nil {
-					return err
-				}
-				authCfg := cfg.Authentication()
-				hostname, _ := authCfg.DefaultHost()
-				var hasScope bool
-				if token, _ := authCfg.Token(hostname); token != "" {
-					httpClient, err := opts.HttpClient()
-					if err != nil {
-						return err
-					}
-					if oldScopes, err := sharedAuth.GetScopes(httpClient, hostname, token); err == nil {
-						for _, s := range strings.Split(oldScopes, ",") {
-							s = strings.TrimSpace(s)
-							if s == "admin:org" {
-								hasScope = true
-								break
-							}
-						}
-					}
-				}
-				if !hasScope {
-					return cmdutil.FlagErrorf("admin:org scope is required to add a team when creating a repository from a template")
-				}
 			}
 
 			if opts.Template == "" && opts.IncludeAllBranches {
